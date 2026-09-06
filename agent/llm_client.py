@@ -1,7 +1,7 @@
 """
 agent/llm_client.py
 ===================
-LLM 래퍼. Gemini API 우선 지원 및 Ollama 로컬 폴백.
+LLM 래퍼. Google Gemini API 우선 지원 및 Ollama 로컬 폴백.
 """
 from __future__ import annotations
 
@@ -25,6 +25,7 @@ DEFAULT_SYSTEM = (
 )
 
 _ollama_available: bool | None = None
+_cached_gemini_model: str | None = None
 
 
 def _check_gemini() -> bool:
@@ -47,21 +48,35 @@ def _check_ollama() -> bool:
     return _ollama_available
 
 
-def _pick_ollama_model() -> str:
+def _pick_gemini_model() -> list[str]:
+    """사용 가능한 Gemini Flash 모델 목록을 가져오고 정적 폴백 목록을 반환."""
+    global _cached_gemini_model
+    fallback_models = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
+    
+    if _cached_gemini_model:
+        return [_cached_gemini_model] + [m for m in fallback_models if m != _cached_gemini_model]
+
     try:
-        resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
+        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+        resp = requests.get(url, timeout=10)
         if resp.ok:
-            names = {m["name"] for m in resp.json().get("models", [])}
-            for candidate in (DEFAULT_MODEL, "qwen2.5:7b", FALLBACK_MODEL):
-                if candidate in names:
-                    return candidate
-    except Exception:
-        pass
-    return DEFAULT_MODEL
+            available = [
+                m["name"].replace("models/", "")
+                for m in resp.json().get("models", [])
+                if "generateContent" in m.get("supportedGenerationMethods", [])
+            ]
+            flash_models = [m for m in available if "flash" in m.lower()]
+            if flash_models:
+                _cached_gemini_model = flash_models[0]
+                return flash_models + fallback_models
+    except Exception as e:
+        logger.warning(f"[llm_client] ListModels 조회 실패: {e}")
+
+    return fallback_models
 
 
 def _generate_gemini(prompt: str, system: str, temperature: float, max_tokens: int) -> str:
-    models = ["gemini-2.0-flash", "gemini-1.5-flash", "gemini-2.5-flash"]
+    models = _pick_gemini_model()
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -88,6 +103,19 @@ def _generate_gemini(prompt: str, system: str, temperature: float, max_tokens: i
 
     logger.error("[llm_client] 모든 Gemini 모델 호출 실패")
     return ""
+
+
+def _pick_ollama_model() -> str:
+    try:
+        resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
+        if resp.ok:
+            names = {m["name"] for m in resp.json().get("models", [])}
+            for candidate in (DEFAULT_MODEL, "qwen2.5:7b", FALLBACK_MODEL):
+                if candidate in names:
+                    return candidate
+    except Exception:
+        pass
+    return DEFAULT_MODEL
 
 
 def _generate_ollama(prompt: str, system: str, temperature: float, max_tokens: int) -> str:
@@ -153,5 +181,6 @@ def is_available() -> bool:
 
 
 def reset_cache():
-    global _ollama_available
+    global _ollama_available, _cached_gemini_model
     _ollama_available = None
+    _cached_gemini_model = None
