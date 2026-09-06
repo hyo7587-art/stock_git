@@ -30,4 +30,4 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         PYTHONPATH: .
       run: |
-        bot/morning_brief.py
+        python bot/morning_brief.py
