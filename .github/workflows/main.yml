@@ -34,6 +34,8 @@ jobs:
 
     - name: Run Script
       env:
+        LLM_PROVIDER: "gemini"
+        DEFAULT_LLM: "gemini"
         GEMINI_API_KEY: ${{ secrets.DEFAULT_GEMINI_API_KEY }}
         DEFAULT_GEMINI_API_KEY: ${{ secrets.DEFAULT_GEMINI_API_KEY }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
@@ -51,6 +53,6 @@ jobs:
         MYSQL_DB: "stock_db"
         PYTHONPATH: .
       run: |
-        python -m database.db_migrate || true
+        python agent/db_migrate.py || true
         python agent/report_daily.py
         python bot/morning_brief.py
