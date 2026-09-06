@@ -30,4 +30,5 @@ jobs:
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         PYTHONPATH: .
       run: |
+        python -m agent.daily_recommend || python agent/daily_recommend.py || python agent/recommend.py
         python bot/morning_brief.py
