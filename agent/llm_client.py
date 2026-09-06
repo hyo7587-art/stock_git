@@ -1,7 +1,7 @@
 """
 agent/llm_client.py
 ===================
-LLM 래퍼. Google Gemini API 우선 지원 및 Ollama 로컬 폴백.
+LLM 래퍼. Google Gemini API 전용 (최신 모델 자동 호환).
 """
 from __future__ import annotations
 
@@ -15,68 +15,27 @@ import requests
 logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY") or os.getenv("DEFAULT_GEMINI_API_KEY", "")
-OLLAMA_BASE = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
-DEFAULT_MODEL = os.getenv("REPORT_LLM_MODEL", "qwen2.5:7b")
-FALLBACK_MODEL = "llama3.2:latest"
 
 DEFAULT_SYSTEM = (
     "당신은 한국 금융 분석가입니다. 사용자가 다른 언어를 명시적으로 요청하지 않는 한 "
     "반드시 자연스러운 한국어로만 작성하고, 하나의 답변 안에서 다른 언어 문자를 섞지 마세요."
 )
 
-_ollama_available: bool | None = None
-_cached_gemini_model: str | None = None
-
 
 def _check_gemini() -> bool:
     return bool(GEMINI_API_KEY)
 
 
-def _check_ollama() -> bool:
-    global _ollama_available
-    if _ollama_available is not None:
-        return _ollama_available
-    try:
-        resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
-        if resp.ok:
-            names = {m["name"] for m in resp.json().get("models", [])}
-            _ollama_available = bool(names)
-        else:
-            _ollama_available = False
-    except Exception:
-        _ollama_available = False
-    return _ollama_available
-
-
-def _pick_gemini_model() -> list[str]:
-    """사용 가능한 Gemini Flash 모델 목록을 가져오고 정적 폴백 목록을 반환."""
-    global _cached_gemini_model
-    fallback_models = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-2.0-flash", "gemini-1.5-flash"]
-    
-    if _cached_gemini_model:
-        return [_cached_gemini_model] + [m for m in fallback_models if m != _cached_gemini_model]
-
-    try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
-        resp = requests.get(url, timeout=10)
-        if resp.ok:
-            available = [
-                m["name"].replace("models/", "")
-                for m in resp.json().get("models", [])
-                if "generateContent" in m.get("supportedGenerationMethods", [])
-            ]
-            flash_models = [m for m in available if "flash" in m.lower()]
-            if flash_models:
-                _cached_gemini_model = flash_models[0]
-                return flash_models + fallback_models
-    except Exception as e:
-        logger.warning(f"[llm_client] ListModels 조회 실패: {e}")
-
-    return fallback_models
-
-
 def _generate_gemini(prompt: str, system: str, temperature: float, max_tokens: int) -> str:
-    models = _pick_gemini_model()
+    # 2026 권장 모델 및 검증된 안정 텍스트 모델 목록
+    models = [
+        "gemini-3.6-flash",
+        "gemini-2.5-flash",
+        "gemini-2.0-flash",
+        "gemini-1.5-flash-latest",
+        "gemini-1.5-pro",
+    ]
+
     payload = {
         "contents": [{"role": "user", "parts": [{"text": prompt}]}],
         "generationConfig": {
@@ -96,45 +55,13 @@ def _generate_gemini(prompt: str, system: str, temperature: float, max_tokens: i
             if resp.status_code == 200:
                 data = resp.json()
                 return data["candidates"][0]["content"]["parts"][0]["text"].strip()
-            logger.warning(f"[llm_client] {model_name} HTTP {resp.status_code}: {resp.text}")
-        except Exception as e:
-            logger.warning(f"[llm_client] {model_name} 요청 예외: {e}")
+            # 404(모델 지원 종료/미지원), 400(모달리티 불일치), 503(일시적 과부하) 발생 시 다음 안정 모델로 즉시 전환
+            logger.info(f"[llm_client] {model_name} (상태: {resp.status_code}) -> 다음 모델 시도")
+        except Exception:
             continue
 
-    logger.error("[llm_client] 모든 Gemini 모델 호출 실패")
+    logger.error("[llm_client] 모든 지원 모델 호출 실패")
     return ""
-
-
-def _pick_ollama_model() -> str:
-    try:
-        resp = requests.get(f"{OLLAMA_BASE}/api/tags", timeout=5)
-        if resp.ok:
-            names = {m["name"] for m in resp.json().get("models", [])}
-            for candidate in (DEFAULT_MODEL, "qwen2.5:7b", FALLBACK_MODEL):
-                if candidate in names:
-                    return candidate
-    except Exception:
-        pass
-    return DEFAULT_MODEL
-
-
-def _generate_ollama(prompt: str, system: str, temperature: float, max_tokens: int) -> str:
-    model = _pick_ollama_model()
-    payload = {
-        "model": model,
-        "prompt": prompt,
-        "stream": False,
-        "options": {"temperature": temperature, "num_predict": max_tokens},
-    }
-    if system:
-        payload["system"] = system
-    try:
-        resp = requests.post(f"{OLLAMA_BASE}/api/generate", json=payload, timeout=300)
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip()
-    except Exception as e:
-        logger.error(f"[llm_client] Ollama generate 실패 ({model}): {e}")
-        return ""
 
 
 def generate(
@@ -145,7 +72,6 @@ def generate(
     temperature: float = 0.3,
     max_tokens: int = 4096,
 ) -> str:
-    """텍스트 생성. Gemini 우선, 미가용 시 Ollama 사용."""
     if not system:
         system = DEFAULT_SYSTEM
 
@@ -155,11 +81,7 @@ def generate(
         if res:
             return res
 
-    if _check_ollama():
-        logger.info("[llm_client] Ollama 사용")
-        return _generate_ollama(prompt, system, temperature, max_tokens)
-
-    logger.warning("[llm_client] LLM 미가용 — 빈 응답 반환")
+    logger.warning("[llm_client] LLM 미가용 또는 응답 생성 실패")
     return ""
 
 
@@ -177,10 +99,8 @@ def stream_generate(
 
 
 def is_available() -> bool:
-    return _check_gemini() or _check_ollama()
+    return _check_gemini()
 
 
 def reset_cache():
-    global _ollama_available, _cached_gemini_model
-    _ollama_available = None
-    _cached_gemini_model = None
+    pass
