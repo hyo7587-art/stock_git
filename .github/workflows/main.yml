@@ -28,6 +28,7 @@ jobs:
         DEFAULT_GEMINI_API_KEY: ${{ secrets.DEFAULT_GEMINI_API_KEY }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        SECRET_KEY: "stock_alert_secret_key_12345"
         PYTHONPATH: .
       run: |
         python agent/report_daily.py
